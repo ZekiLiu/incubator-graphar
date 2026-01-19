@@ -51,5 +51,5 @@ jobs:
           cache-dependency-path: go/go.sum
 
       - name: Go test
-        working-directory: go
+        working-directory: go/graphar
         run: go test ./...
