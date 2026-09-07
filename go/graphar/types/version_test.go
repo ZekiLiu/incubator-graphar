@@ -22,20 +22,38 @@ import (
 	"testing"
 )
 
+func mustNewInfoVersion(t *testing.T, version int, names ...string) InfoVersion {
+	t.Helper()
+	v, err := NewInfoVersion(version, names...)
+	if err != nil {
+		t.Fatalf("NewInfoVersion(%d, %q) = %v", version, names, err)
+	}
+	return v
+}
+
 func TestNewInfoVersion(t *testing.T) {
 	t.Parallel()
-	v := NewInfoVersion(1)
+	v, err := NewInfoVersion(1)
+	if err != nil {
+		t.Fatalf("NewInfoVersion(1): %v", err)
+	}
 	if v.Version() != 1 || len(v.UserDefinedTypes()) != 0 {
 		t.Errorf("NewInfoVersion(1) = %+v", v)
 	}
-	v2 := NewInfoVersion(2, "geometry", "point")
-	if v2.Version() != 2 || len(v2.UserDefinedTypes()) != 2 ||
+	v2, err := NewInfoVersion(1, "geometry", "point")
+	if err != nil {
+		t.Fatalf("NewInfoVersion(1, ...): %v", err)
+	}
+	if v2.Version() != 1 || len(v2.UserDefinedTypes()) != 2 ||
 		v2.UserDefinedTypes()[0] != "geometry" || v2.UserDefinedTypes()[1] != "point" {
-		t.Errorf("NewInfoVersion(2, ...) = %+v", v2)
+		t.Errorf("NewInfoVersion(1, ...) = %+v", v2)
 	}
 	// Mutating the input slice must not affect the stored value.
 	orig := []string{"geometry"}
-	v3 := NewInfoVersion(3, orig...)
+	v3, err := NewInfoVersion(1, orig...)
+	if err != nil {
+		t.Fatalf("NewInfoVersion(1, ...): %v", err)
+	}
 	orig[0] = "mutated"
 	if v3.UserDefinedTypes()[0] != "geometry" {
 		t.Errorf("UserDefinedTypes was not defensively copied")
@@ -48,15 +66,29 @@ func TestNewInfoVersion(t *testing.T) {
 	}
 }
 
+func TestNewInfoVersionRejectsUnsupportedVersions(t *testing.T) {
+	t.Parallel()
+	for _, version := range []int{0, -1, 2, 99} {
+		_, err := NewInfoVersion(version)
+		if err == nil {
+			t.Errorf("NewInfoVersion(%d) succeeded, want error", version)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidVersion) {
+			t.Errorf("NewInfoVersion(%d) error %v not wrapped", version, err)
+		}
+	}
+}
+
 func TestInfoVersionString(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		v    InfoVersion
 		want string
 	}{
-		{NewInfoVersion(1), "gar/v1"},
-		{NewInfoVersion(2, "geometry"), "gar/v2 (geometry)"},
-		{NewInfoVersion(3, "geometry", "point"), "gar/v3 (geometry,point)"},
+		{mustNewInfoVersion(t, 1), "gar/v1"},
+		{mustNewInfoVersion(t, 1, "geometry"), "gar/v1 (geometry)"},
+		{mustNewInfoVersion(t, 1, "geometry", "point"), "gar/v1 (geometry,point)"},
 	}
 	for _, c := range cases {
 		if got := c.v.String(); got != c.want {
@@ -67,18 +99,19 @@ func TestInfoVersionString(t *testing.T) {
 
 func TestInfoVersionEqual(t *testing.T) {
 	t.Parallel()
-	a := NewInfoVersion(1, "g")
-	b := NewInfoVersion(1, "g")
+	a := mustNewInfoVersion(t, 1, "g")
+	b := mustNewInfoVersion(t, 1, "g")
 	if !a.Equal(b) {
 		t.Error("identical InfoVersions not equal")
 	}
-	if a.Equal(NewInfoVersion(2, "g")) {
+	// Only version 1 is supported, so build the differing version directly.
+	if a.Equal(InfoVersion{version: 2, userDefinedTypes: []string{"g"}}) {
 		t.Error("different version reported equal")
 	}
-	if a.Equal(NewInfoVersion(1)) {
+	if a.Equal(mustNewInfoVersion(t, 1)) {
 		t.Error("different type lists reported equal")
 	}
-	if a.Equal(NewInfoVersion(1, "h")) {
+	if a.Equal(mustNewInfoVersion(t, 1, "h")) {
 		t.Error("different type names reported equal")
 	}
 }
@@ -89,18 +122,21 @@ func TestParseInfoVersionOK(t *testing.T) {
 		in   string
 		want InfoVersion
 	}{
-		{"gar/v1", NewInfoVersion(1)},
-		{"  gar/v2  ", NewInfoVersion(2)},
-		{"gar/v3 (geometry)", NewInfoVersion(3, "geometry")},
-		{"gar/v4 (geometry, point)", NewInfoVersion(4, "geometry", "point")},
-		{"gar/v5(a,b,c)", NewInfoVersion(5, "a", "b", "c")},
-		// Lenient parsing: trailing text (after the number or ')') is ignored,
-		// an unterminated '(' drops the list, and blank entries are skipped.
-		{"gar/v1abc", NewInfoVersion(1)},
-		{"gar/v2 (foo)trailing", NewInfoVersion(2, "foo")},
-		{"gar/v1 (", NewInfoVersion(1)},
-		{"gar/v1 ()", NewInfoVersion(1)},
-		{"gar/v1 (a,,b)", NewInfoVersion(1, "a", "b")},
+		{"gar/v1", mustNewInfoVersion(t, 1)},
+		{"gar/v1  ", mustNewInfoVersion(t, 1)},
+		{"gar/v1 (geometry)", mustNewInfoVersion(t, 1, "geometry")},
+		{"gar/v1 (geometry, point)", mustNewInfoVersion(t, 1, "geometry", "point")},
+		{"gar/v1(a,b,c)", mustNewInfoVersion(t, 1, "a", "b", "c")},
+		// Trailing text is ignored; a list is read only when '(' directly
+		// follows the version number.
+		{"gar/v1abc", mustNewInfoVersion(t, 1)},
+		{"gar/v1 xyz", mustNewInfoVersion(t, 1)},
+		{"gar/v1 xyz(a,b)", mustNewInfoVersion(t, 1)},
+		{"gar/v1 (foo)trailing", mustNewInfoVersion(t, 1, "foo")},
+		{"gar/v1 (", mustNewInfoVersion(t, 1)},
+		{"gar/v1 (foo", mustNewInfoVersion(t, 1)},
+		{"gar/v1 ()", mustNewInfoVersion(t, 1)},
+		{"gar/v1 (a,,b)", mustNewInfoVersion(t, 1, "a", "b")},
 	}
 	for _, c := range cases {
 		got, err := ParseInfoVersion(c.in)
@@ -120,11 +156,15 @@ func TestParseInfoVersionErrors(t *testing.T) {
 		"",
 		"   ",
 		"gar/v",
-		"gar/v0",   // version must be > 0
-		"gar/v-1",  // negative
-		"gar/vabc", // not numeric
-		"foo/v1",   // wrong prefix
+		"gar/vabc",
+		"gar/v-1",
+		"gar/v99999999999999999999999999999999999999999999999999", // overflows int
+		"foo/v1",
 		"v1",
+		" gar/v1", // leading whitespace is not part of the format
+		"gar/v0",  // unsupported version
+		"gar/v2",  // unsupported version
+		"gar/v99", // unsupported version
 	}
 	for _, in := range cases {
 		_, err := ParseInfoVersion(in)
@@ -140,7 +180,7 @@ func TestParseInfoVersionErrors(t *testing.T) {
 
 func TestParseInfoVersionRoundTrip(t *testing.T) {
 	t.Parallel()
-	for _, in := range []string{"gar/v1", "gar/v2 (geometry,point)"} {
+	for _, in := range []string{"gar/v1", "gar/v1 (geometry,point)"} {
 		v, err := ParseInfoVersion(in)
 		if err != nil {
 			t.Fatalf("ParseInfoVersion(%q): %v", in, err)
@@ -158,34 +198,13 @@ func TestDefaultVersionConstant(t *testing.T) {
 	}
 }
 
-func TestNewInfoVersionNonPositiveClamps(t *testing.T) {
-	t.Parallel()
-	// NewInfoVersion must keep the result round-trippable: a 0 or negative
-	// argument is clamped to DefaultVersion so String/ParseInfoVersion are
-	// inverses on every produced value.
-	for _, v := range []int{0, -1, -1000} {
-		got := NewInfoVersion(v)
-		if got.Version() != DefaultVersion {
-			t.Errorf("NewInfoVersion(%d) = %d, want clamped to %d", v, got.Version(), DefaultVersion)
-		}
-		// Verify round-trip.
-		parsed, err := ParseInfoVersion(got.String())
-		if err != nil {
-			t.Errorf("clamped NewInfoVersion(%d) fails round-trip: %v", v, err)
-		}
-		if !parsed.Equal(got) {
-			t.Errorf("round-trip mismatch for NewInfoVersion(%d): %v vs %v", v, parsed, got)
-		}
-	}
-}
-
 // TestInfoVersionCloneIndependent guards the immutability contract: Clone must
 // return a version whose UserDefinedTypes slice is independent of the source,
 // so a value handed out by an Info's Version() getter cannot mutate stored
 // state.
 func TestInfoVersionCloneIndependent(t *testing.T) {
 	t.Parallel()
-	orig := NewInfoVersion(1, "geometry", "point")
+	orig := mustNewInfoVersion(t, 1, "geometry", "point")
 	clone := orig.Clone()
 	if !clone.Equal(orig) {
 		t.Fatalf("Clone not equal to source: %+v vs %+v", clone, orig)
@@ -195,7 +214,8 @@ func TestInfoVersionCloneIndependent(t *testing.T) {
 		t.Errorf("mutating clone leaked into source: %v", orig.userDefinedTypes)
 	}
 	// Empty case must not panic and stays independent.
-	if got := NewInfoVersion(2).Clone(); len(got.userDefinedTypes) != 0 || got.version != 2 {
+	empty := mustNewInfoVersion(t, 1)
+	if got := empty.Clone(); len(got.userDefinedTypes) != 0 || got.version != 1 {
 		t.Errorf("empty clone wrong: %+v", got)
 	}
 }
@@ -203,8 +223,8 @@ func TestInfoVersionCloneIndependent(t *testing.T) {
 func TestInfoVersionValidate(t *testing.T) {
 	t.Parallel()
 	valid := []InfoVersion{
-		NewInfoVersion(1),
-		NewInfoVersion(2, "geometry", "point"),
+		mustNewInfoVersion(t, 1),
+		mustNewInfoVersion(t, 1, "geometry", "point"),
 	}
 	for _, v := range valid {
 		if err := v.Validate(); err != nil {
@@ -218,6 +238,7 @@ func TestInfoVersionValidate(t *testing.T) {
 	}{
 		{"zero version", InfoVersion{version: 0}},
 		{"negative version", InfoVersion{version: -1}},
+		{"unsupported version", InfoVersion{version: 2}},
 		{"name with comma", InfoVersion{version: 1, userDefinedTypes: []string{"my,type"}}},
 		{"name with surrounding space", InfoVersion{version: 1, userDefinedTypes: []string{" geometry "}}},
 		{"empty name", InfoVersion{version: 1, userDefinedTypes: []string{""}}},
@@ -239,7 +260,7 @@ func TestInfoVersionCommaNameRejected(t *testing.T) {
 		t.Fatalf("Validate = %v, want ErrInvalidVersion", err)
 	}
 	// A validated (single, clean) name must survive String -> ParseInfoVersion.
-	ok := NewInfoVersion(1, "geometry")
+	ok := mustNewInfoVersion(t, 1, "geometry")
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("Validate = %v, want nil", err)
 	}
@@ -251,7 +272,7 @@ func TestInfoVersionCommaNameRejected(t *testing.T) {
 
 func TestInfoVersionCheckType(t *testing.T) {
 	t.Parallel()
-	v := NewInfoVersion(1, "geometry")
+	v := mustNewInfoVersion(t, 1, "geometry")
 	cases := []struct {
 		typeStr string
 		want    bool
@@ -266,12 +287,7 @@ func TestInfoVersionCheckType(t *testing.T) {
 			t.Errorf("CheckType(%q) = %v, want %v", c.typeStr, got, c.want)
 		}
 	}
-	// A version with no built-in table still resolves its user-defined types.
-	future := NewInfoVersion(99, "geometry")
-	if future.CheckType("int32") {
-		t.Error("CheckType(int32) on a version without a built-in table should be false")
-	}
-	if !future.CheckType("geometry") {
-		t.Error("CheckType should still find a user-defined type")
+	if got := (InfoVersion{}).CheckType("int32"); got {
+		t.Error("zero InfoVersion must not report built-in types")
 	}
 }

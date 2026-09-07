@@ -36,8 +36,8 @@ const (
 	FileTypeParquet
 	// FileTypeORC is the Apache ORC columnar format.
 	FileTypeORC
-	// FileTypeJSON is the JSON text format. Parseable for read-only fixture
-	// compatibility but rejected by PropertyGroup.Validate.
+	// FileTypeJSON is the JSON text format. Parsing accepts it only for
+	// read-only fixture compatibility; it is not a supported output format.
 	FileTypeJSON
 )
 

@@ -52,17 +52,19 @@ var version2types = map[int][]string{
 	1: {"bool", "int32", "int64", "float", "double", "string"},
 }
 
-// NewInfoVersion returns an InfoVersion with the given version and user-defined
-// type names (copied defensively). A non-positive version is clamped to
-// DefaultVersion.
-func NewInfoVersion(version int, userDefinedTypes ...string) InfoVersion {
+// NewInfoVersion returns an InfoVersion for a supported schema version,
+// copying userDefinedTypes defensively.
+func NewInfoVersion(version int, userDefinedTypes ...string) (InfoVersion, error) {
 	if version <= 0 {
-		version = DefaultVersion
+		return InfoVersion{}, fmt.Errorf("%w: version must be positive, got %d", ErrInvalidVersion, version)
+	}
+	if _, ok := version2types[version]; !ok {
+		return InfoVersion{}, fmt.Errorf("%w: unsupported version %d", ErrInvalidVersion, version)
 	}
 	if len(userDefinedTypes) == 0 {
-		return InfoVersion{version: version}
+		return InfoVersion{version: version}, nil
 	}
-	return InfoVersion{version: version, userDefinedTypes: slices.Clone(userDefinedTypes)}
+	return InfoVersion{version: version, userDefinedTypes: slices.Clone(userDefinedTypes)}, nil
 }
 
 // Version returns the schema version number.
@@ -77,7 +79,7 @@ func (v InfoVersion) UserDefinedTypes() []string {
 // CheckType reports whether typeStr is a property type this version supports,
 // either a built-in type of the version or one of its user-defined types.
 func (v InfoVersion) CheckType(typeStr string) bool {
-	if slices.Contains(version2types[v.version], typeStr) {
+	if supported, ok := version2types[v.version]; ok && slices.Contains(supported, typeStr) {
 		return true
 	}
 	return slices.Contains(v.userDefinedTypes, typeStr)
@@ -105,6 +107,9 @@ func (v InfoVersion) Clone() InfoVersion {
 func (v InfoVersion) Validate() error {
 	if v.version <= 0 {
 		return fmt.Errorf("%w: version must be positive, got %d", ErrInvalidVersion, v.version)
+	}
+	if _, ok := version2types[v.version]; !ok {
+		return fmt.Errorf("%w: unsupported version %d", ErrInvalidVersion, v.version)
 	}
 	for _, name := range v.userDefinedTypes {
 		if err := validateTypeName(name); err != nil {
@@ -135,33 +140,37 @@ func (v InfoVersion) Equal(other InfoVersion) bool {
 		slices.Equal(v.userDefinedTypes, other.userDefinedTypes)
 }
 
-// ParseInfoVersion parses "gar/vN" or "gar/vN (t1,t2,...)". Parsing is lenient,
-// leaving strictness to Validate: the version is the leading digits after the
-// prefix and any trailing text is ignored, the type list is whatever sits
-// between the first '(' and the last ')' split on ',' with blank entries
-// skipped, and a '(' with no closing ')' drops the list rather than failing.
-// The tolerances match the C++ parser so both read the same on-disk strings.
+// ParseInfoVersion parses "gar/vN" or "gar/vN (t1,t2,...)".
+//
+// The version must be one the package supports. The type list is recognized
+// only when '(' follows the version number directly, with spaces allowed in
+// between; trailing text elsewhere is ignored. Entries are trimmed, blank
+// entries are skipped, and an unterminated list is dropped.
 func ParseInfoVersion(s string) (InfoVersion, error) {
-	trimmed := strings.TrimSpace(s)
-	if !strings.HasPrefix(trimmed, versionPrefix) {
+	if !strings.HasPrefix(s, versionPrefix) {
 		return InfoVersion{}, fmt.Errorf("%w: must start with %q, got %q", ErrInvalidVersion, versionPrefix, s)
 	}
-	rest := trimmed[len(versionPrefix):]
+	rest := s[len(versionPrefix):]
 
-	// Leading digits are the version number; anything after them is ignored.
 	end := 0
 	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 		end++
 	}
-	n, err := strconv.Atoi(rest[:end])
-	if err != nil || n <= 0 {
+	if end == 0 {
 		return InfoVersion{}, fmt.Errorf("%w: bad version number in %q", ErrInvalidVersion, s)
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return InfoVersion{}, fmt.Errorf("%w: bad version number in %q", ErrInvalidVersion, s)
+	}
+	if _, ok := version2types[n]; !ok {
+		return InfoVersion{}, fmt.Errorf("%w: unsupported version %d in %q", ErrInvalidVersion, n, s)
 	}
 
 	out := InfoVersion{version: n}
-	// Optional "(t1,t2,...)": take everything between the first '(' and the last
-	// ')'. A '(' without a later ')' is ignored.
-	if lparen := strings.IndexByte(rest, '('); lparen >= 0 {
+	// "(t1,t2,...)" list: only when '(' starts right after the digits, with at
+	// most spaces in between. A '(' without a later ')' is ignored.
+	if lparen := strings.IndexByte(rest, '('); lparen >= 0 && strings.Trim(rest[end:lparen], " ") == "" {
 		if rparen := strings.LastIndexByte(rest, ')'); rparen > lparen {
 			for _, p := range strings.Split(rest[lparen+1:rparen], ",") {
 				if t := strings.TrimSpace(p); t != "" {
